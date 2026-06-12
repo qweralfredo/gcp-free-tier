@@ -34,7 +34,7 @@ jobs:
 
     steps:
       - name: ⬇️ Checkout (para verificar versão)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 🔑 Configurar SSH
         run: |
