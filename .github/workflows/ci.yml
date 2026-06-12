@@ -63,7 +63,7 @@ jobs:
             -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=cobertura
 
       - name: 📊 Publicar relatório de testes
-        uses: dorny/test-reporter@v1
+        uses: dorny/test-reporter@v3
         if: always()    # publica mesmo se testes falharem
         with:
           name: Testes .NET — xUnit
