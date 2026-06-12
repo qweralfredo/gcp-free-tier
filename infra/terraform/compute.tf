@@ -44,7 +44,7 @@ resource "google_compute_instance" "briefapp_vm" {
       apt-get update -qq && apt-get install -y -qq git
       # Clonar repositório se não existir
       if [ ! -d "/opt/briefapp/.git" ]; then
-        git clone https://github.com/OWNER/gcp-free-tier.git /opt/briefapp
+        git clone https://github.com/qweralfredo/gcp-free-tier.git /opt/briefapp
       fi
       # Executar script de setup
       bash /opt/briefapp/infra/scripts/setup-vm.sh

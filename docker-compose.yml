@@ -72,7 +72,15 @@ networks:
 volumes:
   duckdb-data:
     driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/briefapp-data/duckdb
   briefapp-logs:
     driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/log/briefapp
   certbot-webroot:
     driver: local
