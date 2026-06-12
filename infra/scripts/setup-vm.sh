@@ -1,62 +1,121 @@
-#!/usr/bin/env bash
-# ═══════════════════════════════════════════════════════════════
-# setup-vm.sh — Provisiona a VM e2-micro Debian 12 para o
-# GCP Free Tier Guardian. Executar UMA vez após criar a VM.
-# ═══════════════════════════════════════════════════════════════
+#!/bin/bash
+# ══════════════════════════════════════════════════════════════════
+# setup-vm.sh — Script de inicialização da VM e2-micro (Debian 12)
+# Executado pelo startup-script do Terraform na primeira inicialização
+# e também manualmente para atualizações: bash /opt/briefapp/infra/scripts/setup-vm.sh
+# ══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
-echo "▶ [1/6] Atualizando pacotes do sistema..."
-sudo apt-get update -qq
-sudo apt-get upgrade -y -qq
+BRIEFAPP_DIR="/opt/briefapp"
+LOG_FILE="/var/log/briefapp-setup.log"
+GITHUB_REPO="https://github.com/qweralfredo/gcp-free-tier.git"
 
-echo "▶ [2/6] Instalando pré-requisitos..."
-sudo apt-get install -y -qq \
-    ca-certificates curl gnupg lsb-release \
-    git ufw fail2ban unattended-upgrades
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 
-echo "▶ [3/6] Instalando Docker Engine + Compose Plugin..."
-sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/debian/gpg \
-    | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-sudo chmod a+r /etc/apt/keyrings/docker.gpg
-
-echo \
-  "deb [arch=$(dpkg --print-architecture) \
-  signed-by=/etc/apt/keyrings/docker.gpg] \
-  https://download.docker.com/linux/debian \
-  $(lsb_release -cs) stable" \
-  | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-sudo apt-get update -qq
-sudo apt-get install -y -qq \
-    docker-ce docker-ce-cli containerd.io \
-    docker-buildx-plugin docker-compose-plugin
-
-# Adicionar usuário corrente ao grupo docker (sem sudo)
-sudo usermod -aG docker "$USER"
-
-echo "▶ [4/6] Configurando UFW (firewall)..."
-sudo ufw --force reset
-sudo ufw default deny incoming
-sudo ufw default allow outgoing
-sudo ufw allow 22/tcp   comment 'SSH'
-sudo ufw allow 80/tcp   comment 'HTTP'
-sudo ufw allow 443/tcp  comment 'HTTPS'
-sudo ufw --force enable
-
-echo "▶ [5/6] Criando diretório do projeto..."
-sudo mkdir -p /opt/briefapp
-sudo chown "$USER:$USER" /opt/briefapp
-
-echo "▶ [6/6] Configurando Google Cloud SDK (gcloud)..."
-if ! command -v gcloud &>/dev/null; then
-    curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts
-    source "$HOME/.bashrc"
+# ── 0. Verificar root ──────────────────────────────────────────────
+if [[ $EUID -ne 0 ]]; then
+  echo "Execute como root: sudo bash setup-vm.sh" >&2
+  exit 1
 fi
 
-echo ""
-echo "✅ Setup concluído!"
-echo "   ➜ Faça logout e login novamente para ativar o grupo docker."
-echo "   ➜ Execute: cd /opt/briefapp && git clone <repo> . && cp .env.example .env"
-echo "   ➜ Edite o .env com suas configurações reais"
-echo "   ➜ Execute: ./infra/scripts/deploy.sh"
+log "=== BriefappGuardian Setup Iniciado ==="
+mkdir -p /var/log/briefapp
+
+# ── 1. Atualizar sistema ───────────────────────────────────────────
+log "Atualizando pacotes do sistema..."
+apt-get update -qq
+apt-get upgrade -y -qq --no-install-recommends
+
+# ── 2. Instalar Docker Engine ──────────────────────────────────────
+if ! command -v docker &>/dev/null; then
+  log "Instalando Docker Engine..."
+  apt-get install -y -qq ca-certificates curl gnupg lsb-release
+
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/debian/gpg | \
+    gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  chmod a+r /etc/apt/keyrings/docker.gpg
+
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+    https://download.docker.com/linux/debian $(lsb_release -cs) stable" \
+    > /etc/apt/sources.list.d/docker.list
+
+  apt-get update -qq
+  apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+  systemctl enable docker
+  systemctl start docker
+  log "Docker instalado: $(docker --version)"
+else
+  log "Docker já instalado: $(docker --version)"
+fi
+
+# ── 3. Instalar Certbot (standalone para Let's Encrypt) ────────────
+if ! command -v certbot &>/dev/null; then
+  log "Instalando Certbot..."
+  apt-get install -y -qq certbot
+  log "Certbot instalado: $(certbot --version)"
+fi
+
+# ── 4. Clonar ou atualizar repositório ────────────────────────────
+if [ ! -d "$BRIEFAPP_DIR/.git" ]; then
+  log "Clonando repositório $GITHUB_REPO..."
+  git clone --depth=1 "$GITHUB_REPO" "$BRIEFAPP_DIR"
+else
+  log "Atualizando repositório..."
+  git -C "$BRIEFAPP_DIR" pull --ff-only origin develop
+fi
+
+# ── 5. Verificar .env ─────────────────────────────────────────────
+if [ ! -f "$BRIEFAPP_DIR/.env" ]; then
+  log "ATENÇÃO: .env não encontrado. Copiando .env.example..."
+  cp "$BRIEFAPP_DIR/.env.example" "$BRIEFAPP_DIR/.env"
+  log "⚠️  Edite $BRIEFAPP_DIR/.env antes de prosseguir!"
+  log "    Necessário: GCP_PROJECT_ID, ADMIN_PASSWORD_HASH, TELEGRAM_BOT_TOKEN"
+fi
+
+# ── 6. Verificar sa-key.json ──────────────────────────────────────
+if [ ! -f "$BRIEFAPP_DIR/infra/gcp/sa-key.json" ]; then
+  log "⚠️  infra/gcp/sa-key.json não encontrado!"
+  log "    Faça o download da chave da Service Account e coloque neste caminho."
+fi
+
+# ── 7. Criar diretórios de dados ──────────────────────────────────
+log "Criando diretórios de runtime..."
+mkdir -p /opt/briefapp-data/duckdb
+mkdir -p /var/log/briefapp
+chmod 755 /opt/briefapp-data/duckdb
+chmod 755 /var/log/briefapp
+
+# ── 8. Configurar renovação automática do certificado SSL ─────────
+if ! crontab -l 2>/dev/null | grep -q "certbot renew"; then
+  log "Configurando renovação automática do SSL (cron)..."
+  (crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet --deploy-hook 'docker compose -f $BRIEFAPP_DIR/docker-compose.yml restart nginx' >> /var/log/briefapp/certbot.log 2>&1") | crontab -
+fi
+
+# ── 9. Configurar swap (vital para VM com 1GB RAM) ────────────────
+if [ ! -f /swapfile ]; then
+  log "Criando arquivo de swap (512 MB)..."
+  fallocate -l 512M /swapfile
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  log "Swap de 512MB ativado."
+fi
+
+# ── 10. Docker Compose Up ─────────────────────────────────────────
+if [ -f "$BRIEFAPP_DIR/.env" ] && [ -f "$BRIEFAPP_DIR/infra/gcp/sa-key.json" ]; then
+  log "Subindo containers com Docker Compose..."
+  docker compose -f "$BRIEFAPP_DIR/docker-compose.yml" pull
+  docker compose -f "$BRIEFAPP_DIR/docker-compose.yml" up -d --build
+  log "Containers iniciados. Verificando health..."
+  sleep 10
+  docker compose -f "$BRIEFAPP_DIR/docker-compose.yml" ps
+else
+  log "⚠️  Setup incompleto. Configure .env e sa-key.json, depois execute:"
+  log "    docker compose -f $BRIEFAPP_DIR/docker-compose.yml up -d --build"
+fi
+
+log "=== Setup concluído! ==="
+log "Acesse: https://$(curl -s ifconfig.me 2>/dev/null || echo 'SEU-IP')"

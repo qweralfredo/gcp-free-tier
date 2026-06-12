@@ -1,29 +1,37 @@
-# ── Stage 1: PHP-FPM 8.2 (porta alta — sem root) ─────────────────────────────
-FROM php:8.2-fpm-alpine AS production
+FROM php:8.2-fpm-alpine
 
-# Instalar extensões necessárias
+# Instalar dependências PHP necessárias
 RUN apk add --no-cache \
-        libpng-dev \
-        oniguruma-dev \
-    && docker-php-ext-install \
-        pdo \
-        pdo_sqlite \
-        mbstring \
-        json \
-    && rm -rf /var/cache/apk/*
+    nginx \
+    curl \
+    && docker-php-ext-install opcache
 
-# Configuração de segurança: rodar como usuário não-root
-RUN addgroup -g 1001 briefapp \
- && adduser -D -u 1001 -G briefapp briefapp
+# Configuração do OPcache para performance
+RUN { \
+    echo 'opcache.enable=1'; \
+    echo 'opcache.memory_consumption=32'; \
+    echo 'opcache.max_accelerated_files=500'; \
+    echo 'opcache.revalidate_freq=60'; \
+} > /usr/local/etc/php/conf.d/opcache.ini
+
+# Criar diretórios da aplicação
+RUN mkdir -p /var/www/html /var/run/php
 
 WORKDIR /var/www/html
 
-# Copiar código do frontend
-COPY --chown=briefapp:briefapp . .
+# Copiar código PHP
+COPY public/ /var/www/html/public/
+COPY src/ /var/www/html/src/
+COPY views/ /var/www/html/views/
 
-# PHP-FPM escuta na porta 9000 (alta, não privilegiada)
+# Permissões corretas para PHP-FPM (não-root)
+RUN chown -R www-data:www-data /var/www/html
+
+USER www-data
+
 EXPOSE 9000
 
-USER briefapp
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -fs http://localhost:9000 || exit 1
 
-CMD ["php-fpm", "--nodaemonize"]
+CMD ["php-fpm"]
