@@ -1,0 +1,50 @@
+# Secrets — NUNCA commitar
+.env
+*.env.local
+infra/gcp/sa-key.json
+**/sa-key.json
+
+# Terraform — NUNCA commitar state ou tfvars com secrets
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+!*.tfvars.example
+.terraform.lock.hcl
+infra/terraform/.terraform/
+
+# DuckDB — banco local (não versionar dados)
+*.db
+*.db.wal
+*.parquet
+
+# .NET
+backend/**/bin/
+backend/**/obj/
+backend/**/*.user
+backend/.vs/
+backend/TestResults/
+backend/coverage/
+
+# PHP
+frontend/vendor/
+frontend/.phpunit.cache/
+
+# Docker
+docker-compose.override.yml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln.docstates
+
+# Logs locais (em dev)
+logs/
+*.log

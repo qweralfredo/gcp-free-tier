@@ -1,0 +1,19 @@
+# ── Copie este arquivo para terraform.tfvars e preencha os valores ──
+# NUNCA commite terraform.tfvars (está no .gitignore)
+
+project_id         = "SEU-PROJECT-ID"
+billing_account_id = "XXXXXX-XXXXXX-XXXXXX"
+
+# SSH key: gere com 'ssh-keygen -t ed25519 -C briefapp-admin'
+# Formato: "usuario:ssh-ed25519 AAAA..."
+admin_ssh_key = "briefapp-admin:ssh-ed25519 AAAAC3Nza..."
+
+# Restrinja ao seu IP: curl ifconfig.me
+admin_cidrs = ["SEU-IP/32"]
+
+# Opcionais (usar defaults)
+# region      = "us-central1"
+# zone        = "us-central1-a"
+# vm_name     = "briefapp-guardian-vm"
+# bucket_name = "briefapp-guardian-metrics"
+# sa_name     = "briefapp-guardian"
