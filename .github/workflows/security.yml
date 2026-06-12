@@ -1,0 +1,41 @@
+name: Security — Dependabot & Audit
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'   # toda segunda-feira às 8h UTC
+  workflow_dispatch:
+
+jobs:
+  dotnet-audit:
+    name: 🔍 .NET Vulnerability Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+          dotnet-quality: preview
+
+      - name: Restaurar pacotes
+        run: dotnet restore backend/src/BriefappGuardian.Api/BriefappGuardian.Api.csproj
+
+      - name: 🛡️ Verificar vulnerabilidades NuGet
+        run: |
+          dotnet list backend/src/BriefappGuardian.Api/BriefappGuardian.Api.csproj \
+            package --vulnerable --include-transitive 2>&1 | tee vuln-report.txt
+
+          if grep -q "has the following vulnerable packages" vuln-report.txt; then
+            echo "::warning::Pacotes com vulnerabilidades encontrados — veja o relatório"
+          else
+            echo "::notice::✅ Nenhuma vulnerabilidade conhecida nos pacotes NuGet"
+          fi
+
+      - name: 📤 Upload relatório de vulnerabilidades
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vulnerability-report
+          path: vuln-report.txt
+          retention-days: 30

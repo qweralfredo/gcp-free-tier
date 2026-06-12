@@ -1,0 +1,107 @@
+name: CD — Deploy para VM GCP
+
+on:
+  push:
+    branches: [ main ]   # deploy automático apenas no main (estável)
+  workflow_dispatch:     # permite disparar manualmente pelo GitHub UI
+    inputs:
+      force_rebuild:
+        description: 'Forçar rebuild dos containers mesmo sem mudanças'
+        required: false
+        default: 'false'
+        type: boolean
+
+# Apenas um deploy por vez — evita condição de corrida
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false   # não cancela deploy em andamento
+
+env:
+  DEPLOY_DIR: /opt/briefapp
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────
+  # Deploy na VM e2-micro via SSH
+  # Secrets necessários (Settings > Secrets > Actions):
+  #   VM_HOST     — IP externo da VM (ex: 34.xxx.xxx.xxx)
+  #   VM_USER     — usuário SSH (ex: alfredo)
+  #   VM_SSH_KEY  — chave privada SSH (gerada pelo Terraform)
+  # ─────────────────────────────────────────────────────────────────
+  deploy:
+    name: 🚀 Deploy → VM GCP (e2-micro us-central1)
+    runs-on: ubuntu-latest
+    environment: production   # requer aprovação manual se configurado
+
+    steps:
+      - name: ⬇️ Checkout (para verificar versão)
+        uses: actions/checkout@v4
+
+      - name: 🔑 Configurar SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Aceitar fingerprint da VM sem prompt interativo
+          ssh-keyscan -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: 🚀 Deploy na VM
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=yes \
+              -o ConnectTimeout=30 \
+              "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" \
+              bash << 'REMOTE_SCRIPT'
+            set -euo pipefail
+            echo "=== Deploy iniciado em $(date) ==="
+
+            # Atualizar repositório
+            cd /opt/briefapp
+            git fetch origin main
+            git checkout main
+            git pull --ff-only origin main
+
+            # Rebuild e restart dos containers (--build apenas se Dockerfile mudou)
+            FORCE_REBUILD="${{ github.event.inputs.force_rebuild || 'false' }}"
+            if [ "$FORCE_REBUILD" = "true" ]; then
+              docker compose pull
+              docker compose up -d --build --force-recreate
+            else
+              docker compose up -d --build
+            fi
+
+            # Aguardar containers ficarem healthy
+            echo "Aguardando health checks..."
+            sleep 15
+
+            # Verificar status
+            docker compose ps
+            docker compose logs --tail=20 dotnet-api
+
+            # Smoke test — API health check
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8081/api/health)
+            if [ "$HTTP_STATUS" != "200" ]; then
+              echo "ERRO: API retornou HTTP $HTTP_STATUS"
+              docker compose logs dotnet-api
+              exit 1
+            fi
+
+            echo "✅ Deploy concluído! API respondendo com HTTP 200."
+            echo "=== Deploy finalizado em $(date) ==="
+          REMOTE_SCRIPT
+
+      - name: 📋 Resumo do Deploy
+        if: always()
+        run: |
+          echo "## 🚀 Deploy Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Ambiente | 🟢 Production (VM e2-micro us-central1) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch | \`main\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Disparado por | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Timestamp | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |" >> $GITHUB_STEP_SUMMARY
+
+      - name: 🔐 Limpar chave SSH
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

@@ -1,0 +1,201 @@
+name: CI — Build & Test
+
+on:
+  push:
+    branches: [ develop, main, "feature/**" ]
+  pull_request:
+    branches: [ develop, main ]
+    types: [ opened, synchronize, reopened ]
+
+# Cancela runs anteriores do mesmo branch/PR ao receber novo push
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_VERSION: "10.0.x"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_NOLOGO: true
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────
+  # JOB 1 — Build & Test .NET
+  # ─────────────────────────────────────────────────────────────────
+  build-and-test:
+    name: .NET Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: ⬇️ Checkout código
+        uses: actions/checkout@v4
+
+      - name: 🔧 Setup .NET ${{ env.DOTNET_VERSION }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          dotnet-quality: preview   # net10.0 ainda em preview
+
+      - name: 📦 Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: 🔄 Restore dependencies
+        run: dotnet restore backend/src/BriefappGuardian.Api/BriefappGuardian.Api.csproj
+
+      - name: 🏗️ Build (Release, sem restore)
+        run: |
+          dotnet build backend/src/BriefappGuardian.Api/BriefappGuardian.Api.csproj \
+            -c Release \
+            --no-restore \
+            -warnaserror
+
+      - name: 🧪 Rodar testes com cobertura
+        run: |
+          dotnet test backend/src/BriefappGuardian.Tests/BriefappGuardian.Tests.csproj \
+            --logger "trx;LogFileName=test-results.trx" \
+            --logger "console;verbosity=normal" \
+            --collect:"XPlat Code Coverage" \
+            --results-directory ./test-results \
+            -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=cobertura
+
+      - name: 📊 Publicar relatório de testes
+        uses: dorny/test-reporter@v1
+        if: always()    # publica mesmo se testes falharem
+        with:
+          name: Testes .NET — xUnit
+          path: test-results/**/*.trx
+          reporter: dotnet-trx
+          fail-on-error: true
+
+      - name: 📈 Upload relatório de cobertura
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: test-results/**/coverage.cobertura.xml
+          retention-days: 7
+
+      - name: ✅ Verificar cobertura mínima (≥ 80%)
+        run: |
+          # Extrai a cobertura de linha do relatório Cobertura
+          COVERAGE_FILE=$(find test-results -name "coverage.cobertura.xml" | head -1)
+          if [ -z "$COVERAGE_FILE" ]; then
+            echo "::warning::Arquivo de cobertura não encontrado — pulando verificação"
+            exit 0
+          fi
+          LINE_RATE=$(grep -oP 'line-rate="\K[^"]+' "$COVERAGE_FILE" | head -1)
+          PERCENT=$(echo "$LINE_RATE * 100" | bc -l | xargs printf "%.1f")
+          echo "Cobertura de linhas: ${PERCENT}%"
+          if (( $(echo "$LINE_RATE < 0.80" | bc -l) )); then
+            echo "::error::Cobertura ${PERCENT}% abaixo do mínimo de 80%"
+            exit 1
+          fi
+          echo "::notice::✅ Cobertura: ${PERCENT}% (mínimo: 80%)"
+
+  # ─────────────────────────────────────────────────────────────────
+  # JOB 2 — Lint & Validação de configuração
+  # ─────────────────────────────────────────────────────────────────
+  lint-validate:
+    name: Lint & Validação
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: ⬇️ Checkout código
+        uses: actions/checkout@v4
+
+      - name: 🐳 Validar docker-compose.yml
+        run: |
+          docker compose -f docker-compose.yml config --quiet
+          echo "::notice::✅ docker-compose.yml válido"
+
+      - name: 🔍 Verificar .env.example completo
+        run: |
+          # Garante que nenhum segredo real foi commitado
+          if grep -rE "(password|secret|token|key)\s*=\s*['\"]?[a-zA-Z0-9+/]{20,}" \
+             --include="*.json" --include="*.yml" --include="*.yaml" \
+             --exclude-dir=".git" --exclude-dir="node_modules" .; then
+            echo "::error::Possível segredo detectado no código-fonte!"
+            exit 1
+          fi
+          echo "::notice::✅ Nenhum segredo detectado"
+
+      - name: 🔒 Verificar que sa-key.json não foi commitado
+        run: |
+          if git ls-files --error-unmatch infra/gcp/sa-key.json 2>/dev/null; then
+            echo "::error::sa-key.json foi commitado! Remova imediatamente."
+            exit 1
+          fi
+          echo "::notice::✅ sa-key.json não está versionado"
+
+      - name: 🐘 Lint PHP com php -l
+        run: |
+          find frontend -name "*.php" -print0 | \
+            xargs -0 php -l 2>&1 | \
+            tee /tmp/php-lint.txt
+          if grep -q "Parse error" /tmp/php-lint.txt; then
+            echo "::error::Erro de sintaxe PHP detectado"
+            exit 1
+          fi
+          COUNT=$(find frontend -name "*.php" | wc -l)
+          echo "::notice::✅ ${COUNT} arquivos PHP sem erros de sintaxe"
+
+  # ─────────────────────────────────────────────────────────────────
+  # JOB 3 — Validar Terraform (apenas no develop e main)
+  # ─────────────────────────────────────────────────────────────────
+  terraform-validate:
+    name: Terraform Validate
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main'
+
+    steps:
+      - name: ⬇️ Checkout código
+        uses: actions/checkout@v4
+
+      - name: 🏗️ Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.6"
+
+      - name: 🔄 Terraform Init (local backend para validação)
+        run: terraform -chdir=infra/terraform init -backend=false
+
+      - name: ✅ Terraform Validate
+        run: terraform -chdir=infra/terraform validate
+
+      - name: 🎨 Terraform Format Check
+        run: terraform -chdir=infra/terraform fmt -check -recursive
+        continue-on-error: true   # warning, não bloqueante
+
+  # ─────────────────────────────────────────────────────────────────
+  # JOB 4 — Summary (status geral do CI)
+  # ─────────────────────────────────────────────────────────────────
+  ci-summary:
+    name: ✅ CI Status
+    runs-on: ubuntu-latest
+    needs: [ build-and-test, lint-validate ]
+    if: always()
+
+    steps:
+      - name: Resumo do CI
+        run: |
+          echo "## 🛡️ GCP Guardian — CI Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build & Test .NET | ${{ needs.build-and-test.result == 'success' && '✅ Passou' || '❌ Falhou' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Lint & Validação | ${{ needs.lint-validate.result == 'success' && '✅ Passou' || '❌ Falhou' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Autor:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+
+          # Falhar o job summary se algum job principal falhou
+          if [[ "${{ needs.build-and-test.result }}" != "success" || \
+                "${{ needs.lint-validate.result }}" != "success" ]]; then
+            echo "::error::Um ou mais jobs de CI falharam."
+            exit 1
+          fi

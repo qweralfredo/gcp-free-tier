@@ -1,0 +1,48 @@
+# Dependabot — atualização automática de dependências
+# Cria PRs automaticamente quando há novas versões de pacotes
+version: 2
+
+updates:
+  # ── NuGet (.NET) ──────────────────────────────────────────────────
+  - package-ecosystem: "nuget"
+    directory: "/backend/src/BriefappGuardian.Api"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Sao_Paulo"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "dotnet"
+    commit-message:
+      prefix: "deps(dotnet)"
+
+  - package-ecosystem: "nuget"
+    directory: "/backend/src/BriefappGuardian.Tests"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Sao_Paulo"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "testing"
+    commit-message:
+      prefix: "deps(tests)"
+
+  # ── GitHub Actions ────────────────────────────────────────────────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Sao_Paulo"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "deps(actions)"
