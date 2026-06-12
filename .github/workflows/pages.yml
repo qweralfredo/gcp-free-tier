@@ -1,0 +1,49 @@
+name: GitHub Pages — Deploy Landing Page
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'docs/**'          # apenas quando a landing page muda
+  workflow_dispatch:       # ou manualmente
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: 🌐 Deploy GitHub Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: ⬇️ Checkout
+        uses: actions/checkout@v4
+
+      - name: 📄 Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: 📦 Upload artifact (pasta docs/)
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/
+
+      - name: 🚀 Deploy para GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: ✅ Resumo
+        run: |
+          echo "## 🌐 GitHub Pages Deployed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**URL:** ${{ steps.deployment.outputs.page_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** main" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
